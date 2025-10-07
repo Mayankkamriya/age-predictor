@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Age Predictor</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .upload-box { border: 2px dashed #ccc; padding: 40px; text-align: center; margin: 20px 0; }
+        .result { margin-top: 20px; padding: 15px; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>Age Prediction App</h1>
+    <p>Upload an image to predict the age</p>
+    
+    <div class="upload-box">
+        <input type="file" id="imageInput" accept="image/*">
+        <button onclick="predictAge()">Predict Age</button>
+    </div>
+    
+    <div id="result"></div>
+    <img id="preview" style="max-width: 300px; display: none; margin-top: 20px;">
+    
+    <script>
+        function predictAge() {
+            const input = document.getElementById('imageInput');
+            const resultDiv = document.getElementById('result');
+            const preview = document.getElementById('preview');
+            
+            if (!input.files[0]) {
+                alert('Please select an image first');
+                return;
+            }
+            
+            // Show preview
+            preview.src = URL.createObjectURL(input.files[0]);
+            preview.style.display = 'block';
+            
+            const formData = new FormData();
+            formData.append('image', input.files[0]);
+            
+            resultDiv.innerHTML = 'Analyzing...';
+            
+            fetch('/predict', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    resultDiv.innerHTML = `<div class="result success">
+                        <h3>Predicted Age: ${data.age} years</h3>
+                    </div>`;
+                } else {
+                    resultDiv.innerHTML = `<div class="result error">
+                        <h3>Error: ${data.error}</h3>
+                    </div>`;
+                }
+            })
+            .catch(error => {
+                resultDiv.innerHTML = `<div class="result error">
+                    <h3>Error: ${error}</h3>
+                </div>`;
+            });
+        }
+    </script>
+</body>
+</html>
