@@ -1,8 +1,8 @@
 deepface==0.0.79
 flask==2.3.3
 opencv-python-headless==4.8.1.78
-numpy==1.24.3
-pillow==10.0.0
+numpy==1.26.0
+pillow==10.0.1
 gunicorn==21.2.0
 setuptools==68.2.2
 wheel==0.43.0
