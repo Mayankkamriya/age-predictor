@@ -79,6 +79,11 @@
             padding: 10px;
             background: #f8f9fa;
             border-radius: 5px;
+            font-family: monospace;
+        }
+        .step.success {
+            background: #d4edda;
+            color: #155724;
         }
         .loader {
             border: 5px solid #f3f3f3;
@@ -116,6 +121,31 @@
             border-radius: 5px;
             margin: 10px 0;
             font-size: 14px;
+        }
+        .result-card {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        .age-display {
+            font-size: 3em;
+            font-weight: bold;
+            color: #007bff;
+            margin: 10px 0;
+        }
+        .confidence-bar {
+            height: 10px;
+            background: #e9ecef;
+            border-radius: 5px;
+            margin: 15px 0;
+            overflow: hidden;
+        }
+        .confidence-fill {
+            height: 100%;
+            background: #28a745;
+            transition: width 0.5s ease;
         }
     </style>
 </head>
@@ -238,14 +268,17 @@
             
             // Reset previous results
             resultDiv.style.display = 'none';
+            resultDiv.innerHTML = '';
             stepsDiv.innerHTML = '';
             
             // Disable button and show loading
             predictBtn.disabled = true;
             predictBtn.textContent = 'Processing...';
             
+            // Show processing step
+            showStep('Processing image...', false);
+            
             // Single API call
-            showStep('Processing image...');
             const formData = new FormData();
             formData.append('image', file);
             
@@ -255,28 +288,42 @@
             })
             .then(response => {
                 if (!response.ok) {
-                    throw new Error('Server error: ' + response.status);
+                    throw new Error(`Server error: ${response.status} ${response.statusText}`);
                 }
                 return response.json();
             })
             .then(data => {
+                console.log('API Response:', data); // Debug log
+                
                 if (!data.success) {
                     throw new Error(data.error || 'Processing failed');
                 }
                 
-                showStep('✓ Analysis completed');
+                // Update step to show completion
+                stepsDiv.innerHTML = '';
+                showStep('✓ Analysis completed', true);
                 
-                // Display results
+                // Display results in a better format
                 resultDiv.innerHTML = `
-                    <div class="result success">
-                        <h3>Predicted Age: ${Math.round(data.age)} years</h3>
-                        <p>Confidence: ${(data.confidence * 100).toFixed(0)}%</p>
-                        ${data.faces_detected > 1 ? 
-                            `<p><small>Detected ${data.faces_detected} faces, using the most prominent one.</small></p>` : ''}
-                        <p><small>Method: ${data.method}</small></p>
+                    <div class="result-card">
+                        <h3>Age Prediction Result</h3>
+                        <div class="age-display">${Math.round(data.age)}</div>
+                        <p>years old</p>
+                        
+                        <div style="margin: 20px 0;">
+                            <strong>Confidence: ${(data.confidence * 100).toFixed(0)}%</strong>
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" style="width: ${data.confidence * 100}%"></div>
+                            </div>
+                        </div>
+                        
+                        <div style="font-size: 14px; color: #666;">
+                            <p>Faces detected: ${data.faces_detected || data.cases_detected || 1}</p>
+                            <p>Method: ${data.method || 'direct_processing'}</p>
+                            ${data.image_url ? `<p><small>Image stored in Cloudinary</small></p>` : ''}
+                        </div>
                     </div>
                 `;
-                resultDiv.className = 'result success';
                 resultDiv.style.display = 'block';
             })
             .catch(error => {
@@ -296,10 +343,10 @@
             });
         }
         
-        function showStep(message) {
+        function showStep(message, isSuccess = false) {
             const stepsDiv = document.getElementById('steps');
             const stepDiv = document.createElement('div');
-            stepDiv.className = 'step';
+            stepDiv.className = `step ${isSuccess ? 'success' : ''}`;
             stepDiv.textContent = message;
             stepsDiv.appendChild(stepDiv);
         }
@@ -310,6 +357,7 @@
                 <div class="result error">
                     <h3>Error</h3>
                     <p>${message}</p>
+                    <p><small>Please try again with a different image.</small></p>
                 </div>
             `;
             resultDiv.className = 'result error';
@@ -320,8 +368,18 @@
         document.getElementById('imageInput').addEventListener('change', function(e) {
             const resultDiv = document.getElementById('result');
             const stepsDiv = document.getElementById('steps');
+            const preview = document.getElementById('preview');
+            
             resultDiv.style.display = 'none';
+            resultDiv.innerHTML = '';
             stepsDiv.innerHTML = '';
+            
+            if (this.files[0]) {
+                preview.src = URL.createObjectURL(this.files[0]);
+                preview.style.display = 'block';
+            } else {
+                preview.style.display = 'none';
+            }
         });
     </script>
 </body>

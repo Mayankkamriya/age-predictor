@@ -24,14 +24,14 @@ except ImportError:
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable CORS for all routes
 
 # Configure Cloudinary from environment variables
 if CLOUDINARY_AVAILABLE:
     cloudinary.config(
-        cloud_name=os.environ.get('CLOUDINARY_NAME'),
+        cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
         api_key=os.environ.get('CLOUDINARY_API_KEY'),
-        api_secret=os.environ.get('CLOUDINARY_SECRET_KEY')
+        api_secret=os.environ.get('CLOUDINARY_API_SECRET')
     )
 
 # Set up logging
@@ -101,7 +101,8 @@ class AgePredictor:
                 'age': age,
                 'confidence': round(confidence, 2),
                 'faces_detected': len(faces),
-                'face_ratio': round(face_ratio, 3)
+                'face_ratio': round(face_ratio, 3),
+                'method': 'direct_processing'
             }
             
         except Exception as e:
@@ -115,9 +116,17 @@ predictor = AgePredictor()
 def home():
     return render_template('index.html')
 
-@app.route('/predict', methods=['POST'])
+@app.route('/predict', methods=['POST', 'OPTIONS'])
 def predict_age():
     """Single endpoint that handles everything"""
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        return response
+        
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image uploaded', 'success': False}), 400
@@ -156,6 +165,7 @@ def predict_age():
                 'age': result['age'],
                 'confidence': result['confidence'],
                 'faces_detected': result['faces_detected'],
+                'cases_detected': result['faces_detected'],  # Added to match your API response
                 'success': True,
                 'method': result.get('method', 'direct_processing')
             }
@@ -164,24 +174,32 @@ def predict_age():
             if cloudinary_url:
                 response_data['image_url'] = cloudinary_url
                 
-            return jsonify(response_data)
+            response = jsonify(response_data)
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response
         else:
-            return jsonify({'error': 'No face detected in the image', 'success': False}), 400
+            response = jsonify({'error': 'No face detected in the image', 'success': False})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 400
             
     except Exception as e:
         logging.error(f"Prediction error: {e}")
-        return jsonify({'error': f'Processing failed: {str(e)}', 'success': False}), 500
+        response = jsonify({'error': f'Processing failed: {str(e)}', 'success': False})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 500
 
 @app.route('/health')
 def health_check():
     """Health check endpoint to verify server is ready"""
-    return jsonify({
+    response = jsonify({
         'status': 'healthy', 
         'cloudinary_available': CLOUDINARY_AVAILABLE,
         'opencv_available': OPENCV_AVAILABLE,
-        'environment_loaded': bool(os.environ.get('CLOUDINARY_NAME')),
+        'environment_loaded': bool(os.environ.get('CLOUDINARY_CLOUD_NAME')),
         'timestamp': time.time()
     })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
