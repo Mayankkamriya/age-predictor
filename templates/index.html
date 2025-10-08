@@ -3,67 +3,172 @@
 <head>
     <title>Age Predictor</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
-        .upload-box { border: 2px dashed #ccc; padding: 40px; text-align: center; margin: 20px 0; }
-        .result { margin-top: 20px; padding: 15px; border-radius: 5px; }
-        .success { background: #d4edda; color: #155724; }
-        .error { background: #f8d7da; color: #721c24; }
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 600px; 
+            margin: 50px auto; 
+            padding: 20px; 
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .upload-box { 
+            border: 2px dashed #ccc; 
+            padding: 40px; 
+            text-align: center; 
+            margin: 20px 0; 
+            border-radius: 5px;
+            transition: border-color 0.3s;
+        }
+        .upload-box:hover {
+            border-color: #007bff;
+        }
+        .result { 
+            margin-top: 20px; 
+            padding: 15px; 
+            border-radius: 5px; 
+            display: none;
+        }
+        .success { 
+            background: #d4edda; 
+            color: #155724; 
+            border: 1px solid #c3e6cb;
+        }
+        .error { 
+            background: #f8d7da; 
+            color: #721c24; 
+            border: 1px solid #f5c6cb;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        #preview {
+            max-width: 100%;
+            max-height: 300px;
+            margin-top: 20px;
+            border-radius: 5px;
+            display: none;
+        }
+        .loading {
+            color: #007bff;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
-    <h1>Age Prediction App</h1>
-    <p>Upload an image to predict the age</p>
-    
-    <div class="upload-box">
-        <input type="file" id="imageInput" accept="image/*">
-        <button onclick="predictAge()">Predict Age</button>
+    <div class="container">
+        <h1>Age Prediction App</h1>
+        <p>Upload an image to predict the age of the person</p>
+        
+        <div class="upload-box">
+            <input type="file" id="imageInput" accept="image/*">
+            <br>
+            <button onclick="predictAge()" id="predictBtn">Predict Age</button>
+        </div>
+        
+        <img id="preview">
+        
+        <div id="result"></div>
     </div>
-    
-    <div id="result"></div>
-    <img id="preview" style="max-width: 300px; display: none; margin-top: 20px;">
     
     <script>
         function predictAge() {
             const input = document.getElementById('imageInput');
             const resultDiv = document.getElementById('result');
             const preview = document.getElementById('preview');
+            const predictBtn = document.getElementById('predictBtn');
             
             if (!input.files[0]) {
-                alert('Please select an image first');
+                showError('Please select an image first');
+                return;
+            }
+            
+            // Validate file type
+            const file = input.files[0];
+            if (!file.type.startsWith('image/')) {
+                showError('Please select a valid image file');
                 return;
             }
             
             // Show preview
-            preview.src = URL.createObjectURL(input.files[0]);
+            preview.src = URL.createObjectURL(file);
             preview.style.display = 'block';
             
             const formData = new FormData();
-            formData.append('image', input.files[0]);
+            formData.append('image', file);
             
-            resultDiv.innerHTML = 'Analyzing...';
+            // Disable button and show loading
+            predictBtn.disabled = true;
+            predictBtn.textContent = 'Analyzing...';
+            resultDiv.innerHTML = '<div class="loading">Analyzing image... This may take a few seconds.</div>';
+            resultDiv.style.display = 'block';
+            resultDiv.className = '';
             
             fetch('/predict', {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     resultDiv.innerHTML = `<div class="result success">
-                        <h3>Predicted Age: ${data.age} years</h3>
+                        <h3>Predicted Age: ${Math.round(data.age)} years</h3>
+                        <p>The person appears to be approximately ${Math.round(data.age)} years old.</p>
                     </div>`;
+                    resultDiv.className = 'result success';
                 } else {
-                    resultDiv.innerHTML = `<div class="result error">
-                        <h3>Error: ${data.error}</h3>
-                    </div>`;
+                    showError(data.error || 'Analysis failed');
                 }
             })
             .catch(error => {
-                resultDiv.innerHTML = `<div class="result error">
-                    <h3>Error: ${error}</h3>
-                </div>`;
+                console.error('Error:', error);
+                showError('Failed to analyze image. Please try again.');
+            })
+            .finally(() => {
+                // Re-enable button
+                predictBtn.disabled = false;
+                predictBtn.textContent = 'Predict Age';
             });
         }
+        
+        function showError(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = `<div class="result error">
+                <h3>Error</h3>
+                <p>${message}</p>
+            </div>`;
+            resultDiv.className = 'result error';
+            resultDiv.style.display = 'block';
+        }
+        
+        // Add event listener for file input change
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'none';
+        });
     </script>
 </body>
 </html>
