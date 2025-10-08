@@ -21,6 +21,14 @@ except ImportError:
     OPENCV_AVAILABLE = False
     logging.warning("OpenCV not available - running in limited mode")
 
+# DeepFace for real age detection
+try:
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
+except ImportError:
+    DEEPFACE_AVAILABLE = False
+    logging.warning("DeepFace not available - install with: pip install deepface")
+
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -44,26 +52,82 @@ class AgePredictor:
         else:
             self.face_cascade = None
         
-    def estimate_age(self, face_ratio):
-        """Estimate age based on face size ratio"""
-        if face_ratio > 0.25:
-            return 25
-        elif face_ratio > 0.15:
-            return 35
-        elif face_ratio > 0.08:
-            return 45
-        elif face_ratio > 0.04:
-            return 60
-        else:
-            return 40
+    def estimate_age_deepface(self, image_path):
+        """Use DeepFace for accurate age prediction"""
+        try:
+            # Analyze image for age, gender, emotion, etc.
+            analysis = DeepFace.analyze(
+                img_path=image_path,
+                actions=['age', 'gender', 'emotion'],
+                enforce_detection=True,
+                detector_backend='opencv',  # or 'ssd', 'mtcnn', 'retinaface'
+                silent=True  # Disable verbose logs
+            )
+            
+            # DeepFace returns a list, take first face analysis
+            if isinstance(analysis, list):
+                result = analysis[0]
+            else:
+                result = analysis
+                
+            return {
+                'age': result['age'],
+                'gender': result['gender'],
+                'dominant_emotion': result['dominant_emotion'],
+                'confidence': 0.85,  # DeepFace has high accuracy
+                'faces_detected': 1,
+                'method': 'deepface_ai'
+            }
+            
+        except Exception as e:
+            logging.error(f"DeepFace analysis error: {e}")
+            return None
 
-    def predict_from_image(self, image_data):
-        """Predict age directly from image data"""
+    def estimate_age_deepface_direct(self, image_data):
+        """Use DeepFace directly with image data (no file saving needed)"""
+        try:
+            # Convert bytes to numpy array for DeepFace
+            file_bytes = np.frombuffer(image_data, np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                return None
+            
+            # Analyze using DeepFace with numpy array
+            analysis = DeepFace.analyze(
+                img_path=img,  # Pass numpy array directly
+                actions=['age', 'gender', 'emotion'],
+                enforce_detection=True,
+                detector_backend='opencv',
+                silent=True
+            )
+            
+            # DeepFace returns a list, take first face analysis
+            if isinstance(analysis, list):
+                result = analysis[0]
+            else:
+                result = analysis
+                
+            return {
+                'age': result['age'],
+                'gender': result['gender'],
+                'dominant_emotion': result['dominant_emotion'],
+                'confidence': 0.85,
+                'faces_detected': 1,
+                'method': 'deepface_direct'
+            }
+            
+        except Exception as e:
+            logging.error(f"DeepFace direct analysis error: {e}")
+            return None
+
+    def fallback_age_prediction(self, image_data):
+        """Fallback method if DeepFace fails"""
         if not OPENCV_AVAILABLE:
             return {'age': 35, 'confidence': 0.5, 'faces_detected': 1, 'method': 'fallback'}
         
         try:
-            # Convert to OpenCV format directly
+            # Convert to OpenCV format
             file_bytes = np.frombuffer(image_data, np.uint8)
             img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
             
@@ -84,30 +148,50 @@ class AgePredictor:
             if len(faces) == 0:
                 return None
             
-            # Use the largest face
+            # Simple ratio-based estimation (old method)
             largest_face = max(faces, key=lambda rect: rect[2] * rect[3])
             x, y, w, h = largest_face
             
-            # Calculate face ratio
             face_area = w * h
             image_area = img.shape[0] * img.shape[1]
             face_ratio = face_area / image_area
             
-            # Estimate age
-            age = self.estimate_age(face_ratio)
+            # Simple age estimation based on face ratio
+            if face_ratio > 0.25:
+                age = 25
+            elif face_ratio > 0.15:
+                age = 35
+            elif face_ratio > 0.08:
+                age = 45
+            elif face_ratio > 0.04:
+                age = 60
+            else:
+                age = 40
+                
             confidence = min(face_ratio * 10, 0.8)
             
             return {
                 'age': age,
                 'confidence': round(confidence, 2),
                 'faces_detected': len(faces),
-                'face_ratio': round(face_ratio, 3),
-                'method': 'direct_processing'
+                'method': 'opencv_fallback'
             }
             
         except Exception as e:
-            logging.error(f"Error in prediction: {e}")
+            logging.error(f"Fallback prediction error: {e}")
             return {'age': 35, 'confidence': 0.3, 'faces_detected': 1, 'method': 'error_fallback'}
+
+    def predict_from_image(self, image_data):
+        """Main prediction method - tries DeepFace first, then fallback"""
+        # First try DeepFace with direct image data
+        if DEEPFACE_AVAILABLE:
+            result = self.estimate_age_deepface_direct(image_data)
+            if result:
+                return result
+        
+        # If DeepFace fails or not available, use fallback
+        logging.info("DeepFace not available or failed, using fallback method")
+        return self.fallback_age_prediction(image_data)
 
 # Initialize predictor
 predictor = AgePredictor()
@@ -157,7 +241,7 @@ def predict_age():
                 logging.warning(f"Cloudinary upload failed: {e}")
                 # Continue without Cloudinary - it's optional
         
-        # Predict age directly from image data
+        # Predict age using DeepFace or fallback
         result = predictor.predict_from_image(image_data)
         
         if result:
@@ -165,10 +249,17 @@ def predict_age():
                 'age': result['age'],
                 'confidence': result['confidence'],
                 'faces_detected': result['faces_detected'],
-                'cases_detected': result['faces_detected'],  # Added to match your API response
+                'cases_detected': result['faces_detected'],
                 'success': True,
-                'method': result.get('method', 'direct_processing')
+                'method': result.get('method', 'unknown'),
+                'ai_model_used': 'DeepFace' if 'deepface' in result.get('method', '') else 'OpenCV Fallback'
             }
+            
+            # Add additional DeepFace data if available
+            if 'gender' in result:
+                response_data['gender'] = result['gender']
+            if 'dominant_emotion' in result:
+                response_data['emotion'] = result['dominant_emotion']
             
             # Add Cloudinary URL if available
             if cloudinary_url:
@@ -195,6 +286,7 @@ def health_check():
         'status': 'healthy', 
         'cloudinary_available': CLOUDINARY_AVAILABLE,
         'opencv_available': OPENCV_AVAILABLE,
+        'deepface_available': DEEPFACE_AVAILABLE,
         'environment_loaded': bool(os.environ.get('CLOUDINARY_CLOUD_NAME')),
         'timestamp': time.time()
     })

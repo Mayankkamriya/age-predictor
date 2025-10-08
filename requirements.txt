@@ -7,5 +7,7 @@ deepface>=0.0.79
 tf-keras>=2.20.0
 flask-cors==4.0.0
 cloudinary==1.36.0
+opencv-python==4.8.1.78
+tensorflow==2.13.0 
 requests==2.31.0
 python-dotenv==1.0.0
