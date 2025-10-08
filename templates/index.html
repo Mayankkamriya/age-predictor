@@ -15,6 +15,7 @@
             padding: 30px;
             border-radius: 10px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
         }
         .upload-box { 
             border: 2px dashed #ccc; 
@@ -70,6 +71,8 @@
         .loading {
             color: #007bff;
             font-style: italic;
+            text-align: center;
+            padding: 20px;
         }
         .step {
             margin: 10px 0;
@@ -77,17 +80,68 @@
             background: #f8f9fa;
             border-radius: 5px;
         }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #007bff;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 2s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .init-loader {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            border-radius: 10px;
+            z-index: 10;
+        }
+        .hidden {
+            display: none !important;
+        }
+        .status-info {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <!-- Initial Loader for Render Cold Start -->
+        <div id="initLoader" class="init-loader">
+            <div class="loader"></div>
+            <p>Waking up the server... This may take 30-60 seconds on first load.</p>
+            <p><small>Render free tier spins down after inactivity</small></p>
+        </div>
+
         <h1>Age Prediction App</h1>
         <p>Upload an image to predict the age (Powered by Cloudinary)</p>
         
+        <div id="statusInfo" class="status-info hidden">
+            <!-- Status will be populated by JavaScript -->
+        </div>
+        
         <div class="upload-box">
-            <input type="file" id="imageInput" accept="image/*">
+            <input type="file" id="imageInput" accept="image/*" disabled>
             <br>
-            <button onclick="processImage()" id="predictBtn">Predict Age</button>
+            <button onclick="processImage()" id="predictBtn" disabled>Predict Age</button>
+            <p id="fileInputStatus" style="color: #6c757d; margin-top: 10px;">
+                Waiting for server to be ready...
+            </p>
         </div>
         
         <div id="steps"></div>
@@ -96,10 +150,70 @@
     </div>
     
     <script>
-        let currentPublicId = null;
-        let currentImageUrl = null;
-
+        // Global variables
+        let serverReady = false;
+        
+        // Check server health on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            checkServerHealth();
+        });
+        
+        function checkServerHealth() {
+            const initLoader = document.getElementById('initLoader');
+            const statusInfo = document.getElementById('statusInfo');
+            const fileInput = document.getElementById('imageInput');
+            const predictBtn = document.getElementById('predictBtn');
+            const fileInputStatus = document.getElementById('fileInputStatus');
+            
+            fetch('/health')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Server not responding properly');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Server is ready!
+                    serverReady = true;
+                    initLoader.classList.add('hidden');
+                    
+                    // Enable UI
+                    fileInput.disabled = false;
+                    predictBtn.disabled = false;
+                    fileInputStatus.textContent = 'Server ready! Select an image to begin.';
+                    fileInputStatus.style.color = '#155724';
+                    
+                    // Show status info
+                    statusInfo.classList.remove('hidden');
+                    statusInfo.innerHTML = `
+                        <strong>Server Status:</strong> ✅ Ready
+                        ${data.cloudinary_available ? '• ✅ Cloudinary' : '• ❌ Cloudinary'}
+                        ${data.opencv_available ? '• ✅ Face Detection' : '• ❌ Face Detection'}
+                    `;
+                })
+                .catch(error => {
+                    console.log('Server not ready yet, retrying...', error);
+                    
+                    // Update loading message
+                    const loadingText = initLoader.querySelector('p');
+                    if (loadingText) {
+                        const dots = loadingText.textContent.split('.').length - 1;
+                        const newDots = '.'.repeat((dots % 3) + 1);
+                        loadingText.innerHTML = `Waking up the server${newDots}<br><small>Render free tier spins down after inactivity</small>`;
+                    }
+                    
+                    // Retry after 3 seconds
+                    setTimeout(checkServerHealth, 3000);
+                });
+        }
+        
         function processImage() {
+            if (!serverReady) {
+                showError('Server is still starting up. Please wait...');
+                checkServerHealth(); // Trigger health check again
+                return;
+            }
+            
             const input = document.getElementById('imageInput');
             const resultDiv = document.getElementById('result');
             const preview = document.getElementById('preview');
@@ -130,79 +244,50 @@
             predictBtn.disabled = true;
             predictBtn.textContent = 'Processing...';
             
-            // Step 1: Upload to Cloudinary
-            showStep('Uploading image to Cloudinary...');
+            // Single API call
+            showStep('Processing image...');
             const formData = new FormData();
             formData.append('image', file);
             
-            fetch('/upload', {
+            fetch('/predict', {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
-            .then(uploadData => {
-                if (!uploadData.success) {
-                    throw new Error(uploadData.error || 'Upload failed');
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
                 }
-                
-                showStep('✓ Image uploaded to Cloudinary');
-                currentImageUrl = uploadData.image_url;
-                currentPublicId = uploadData.public_id;
-                
-                // Step 2: Predict age
-                showStep('Analyzing image for age prediction...');
-                return fetch('/predict', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        image_url: currentImageUrl
-                    })
-                });
+                return response.json();
             })
-            .then(response => response.json())
-            .then(predictionData => {
-                if (!predictionData.success) {
-                    throw new Error(predictionData.error || 'Prediction failed');
+            .then(data => {
+                if (!data.success) {
+                    throw new Error(data.error || 'Processing failed');
                 }
                 
-                showStep('✓ Age prediction completed');
+                showStep('✓ Analysis completed');
                 
                 // Display results
                 resultDiv.innerHTML = `
                     <div class="result success">
-                        <h3>Predicted Age: ${Math.round(predictionData.age)} years</h3>
-                        <p>Confidence: ${(predictionData.confidence * 100).toFixed(0)}%</p>
-                        ${predictionData.faces_detected > 1 ? 
-                            `<p><small>Detected ${predictionData.faces_detected} faces, using the most prominent one.</small></p>` : ''}
+                        <h3>Predicted Age: ${Math.round(data.age)} years</h3>
+                        <p>Confidence: ${(data.confidence * 100).toFixed(0)}%</p>
+                        ${data.faces_detected > 1 ? 
+                            `<p><small>Detected ${data.faces_detected} faces, using the most prominent one.</small></p>` : ''}
+                        <p><small>Method: ${data.method}</small></p>
                     </div>
                 `;
                 resultDiv.className = 'result success';
                 resultDiv.style.display = 'block';
-                
-                // Step 3: Cleanup (optional)
-                showStep('Cleaning up temporary files...');
-                if (currentPublicId) {
-                    return fetch('/cleanup', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            public_id: currentPublicId
-                        })
-                    });
-                }
-            })
-            .then(cleanupResponse => {
-                if (cleanupResponse) {
-                    showStep('✓ Cleanup completed');
-                }
             })
             .catch(error => {
                 console.error('Error:', error);
                 showError(error.message || 'Processing failed');
+                
+                // If server error, check health again
+                if (error.message.includes('Server error')) {
+                    serverReady = false;
+                    checkServerHealth();
+                }
             })
             .finally(() => {
                 // Re-enable button
@@ -237,8 +322,6 @@
             const stepsDiv = document.getElementById('steps');
             resultDiv.style.display = 'none';
             stepsDiv.innerHTML = '';
-            currentPublicId = null;
-            currentImageUrl = null;
         });
     </script>
 </body>

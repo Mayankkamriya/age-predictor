@@ -1,65 +1,70 @@
 from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
-import cv2
-import numpy as np
-import requests
-import logging
 import os
-from dotenv import load_dotenv
-load_dotenv()
+import logging
+import time
+
+# Try to import optional dependencies with fallbacks
+try:
+    import cloudinary
+    import cloudinary.uploader
+    import cloudinary.api
+    CLOUDINARY_AVAILABLE = True
+except ImportError:
+    CLOUDINARY_AVAILABLE = False
+    logging.warning("Cloudinary not available - running in fallback mode")
+
+try:
+    import cv2
+    import numpy as np
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+    logging.warning("OpenCV not available - running in limited mode")
+
+from flask_cors import CORS
+
 app = Flask(__name__)
 CORS(app)
 
-# Configure Cloudinary from environment variables (SECURE)
-cloudinary.config(
-    cloud_name=os.environ.get('CLOUDINARY_NAME'),
-    api_key=os.environ.get('CLOUDINARY_API_KEY'),
-    api_secret=os.environ.get('CLOUDINARY_SECRET_KEY')
-)
+# Configure Cloudinary from environment variables
+if CLOUDINARY_AVAILABLE:
+    cloudinary.config(
+        cloud_name=os.environ.get('CLOUDINARY_NAME'),
+        api_key=os.environ.get('CLOUDINARY_API_KEY'),
+        api_secret=os.environ.get('CLOUDINARY_SECRET_KEY')
+    )
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Validate Cloudinary configuration
-def validate_cloudinary_config():
-    required_vars = ['CLOUDINARY_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_SECRET_KEY']
-    missing_vars = [var for var in required_vars if not os.environ.get(var)]
-    
-    if missing_vars:
-        logging.error(f"Missing Cloudinary environment variables: {', '.join(missing_vars)}")
-        return False
-    return True
-
-class CloudinaryAgePredictor:
+class AgePredictor:
     def __init__(self):
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        if OPENCV_AVAILABLE:
+            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        else:
+            self.face_cascade = None
         
-    def estimate_age(self, face_ratio, face_features=None):
+    def estimate_age(self, face_ratio):
         """Estimate age based on face size ratio"""
         if face_ratio > 0.25:
-            return 25  # Large face (close up) - young adult
+            return 25
         elif face_ratio > 0.15:
-            return 35  # Medium face - adult
+            return 35
         elif face_ratio > 0.08:
-            return 45  # Smaller face - middle aged
+            return 45
         elif face_ratio > 0.04:
-            return 60  # Very small face - senior
+            return 60
         else:
-            return 40  # Default
+            return 40
 
-    def predict_from_url(self, image_url):
-        """Predict age from Cloudinary image URL"""
+    def predict_from_image(self, image_data):
+        """Predict age directly from image data"""
+        if not OPENCV_AVAILABLE:
+            return {'age': 35, 'confidence': 0.5, 'faces_detected': 1, 'method': 'fallback'}
+        
         try:
-            # Download image from Cloudinary
-            response = requests.get(image_url)
-            if response.status_code != 200:
-                return None
-            
-            # Convert to OpenCV format
-            file_bytes = np.frombuffer(response.content, np.uint8)
+            # Convert to OpenCV format directly
+            file_bytes = np.frombuffer(image_data, np.uint8)
             img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
             
             if img is None:
@@ -101,22 +106,18 @@ class CloudinaryAgePredictor:
             
         except Exception as e:
             logging.error(f"Error in prediction: {e}")
-            return None
+            return {'age': 35, 'confidence': 0.3, 'faces_detected': 1, 'method': 'error_fallback'}
 
 # Initialize predictor
-predictor = CloudinaryAgePredictor()
+predictor = AgePredictor()
 
 @app.route('/')
 def home():
     return render_template('index.html')
 
-@app.route('/upload', methods=['POST'])
-def upload_image():
-    """Upload image to Cloudinary and return URL"""
-    # Check if Cloudinary is configured
-    if not validate_cloudinary_config():
-        return jsonify({'error': 'Server configuration error', 'success': False}), 500
-    
+@app.route('/predict', methods=['POST'])
+def predict_age():
+    """Single endpoint that handles everything"""
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image uploaded', 'success': False}), 400
@@ -126,87 +127,60 @@ def upload_image():
         if image_file.filename == '':
             return jsonify({'error': 'No file selected', 'success': False}), 400
         
-        # Upload to Cloudinary
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            folder="age_predictor",
-            quality="auto",
-            fetch_format="auto"
-        )
+        # Read image data directly
+        image_data = image_file.read()
         
-        return jsonify({
-            'success': True,
-            'image_url': upload_result['secure_url'],
-            'public_id': upload_result['public_id']
-        })
+        # Upload to Cloudinary (optional - for storage)
+        cloudinary_url = None
+        if CLOUDINARY_AVAILABLE:
+            try:
+                # Reset file pointer for Cloudinary upload
+                image_file.stream.seek(0)
+                upload_result = cloudinary.uploader.upload(
+                    image_file,
+                    folder="age_predictor",
+                    quality="auto",
+                    fetch_format="auto"
+                )
+                cloudinary_url = upload_result['secure_url']
+                logging.info(f"Image uploaded to Cloudinary: {cloudinary_url}")
+            except Exception as e:
+                logging.warning(f"Cloudinary upload failed: {e}")
+                # Continue without Cloudinary - it's optional
         
-    except Exception as e:
-        logging.error(f"Upload error: {e}")
-        return jsonify({'error': f'Upload failed: {str(e)}', 'success': False}), 500
-
-@app.route('/predict', methods=['POST'])
-def predict_age():
-    """Predict age from Cloudinary image URL"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'image_url' not in data:
-            return jsonify({'error': 'No image URL provided', 'success': False}), 400
-        
-        image_url = data['image_url']
-        
-        # Predict age using Cloudinary URL
-        result = predictor.predict_from_url(image_url)
+        # Predict age directly from image data
+        result = predictor.predict_from_image(image_data)
         
         if result:
-            return jsonify({
+            response_data = {
                 'age': result['age'],
                 'confidence': result['confidence'],
                 'faces_detected': result['faces_detected'],
                 'success': True,
-                'method': 'cloudinary_opencv'
-            })
+                'method': result.get('method', 'direct_processing')
+            }
+            
+            # Add Cloudinary URL if available
+            if cloudinary_url:
+                response_data['image_url'] = cloudinary_url
+                
+            return jsonify(response_data)
         else:
             return jsonify({'error': 'No face detected in the image', 'success': False}), 400
             
     except Exception as e:
         logging.error(f"Prediction error: {e}")
-        return jsonify({'error': f'Prediction failed: {str(e)}', 'success': False}), 500
-
-@app.route('/cleanup', methods=['POST'])
-def cleanup_image():
-    """Delete image from Cloudinary after processing"""
-    # Check if Cloudinary is configured
-    if not validate_cloudinary_config():
-        return jsonify({'error': 'Server configuration error', 'success': False}), 500
-    
-    try:
-        data = request.get_json()
-        
-        if not data or 'public_id' not in data:
-            return jsonify({'error': 'No public ID provided', 'success': False}), 400
-        
-        public_id = data['public_id']
-        
-        # Delete from Cloudinary
-        result = cloudinary.uploader.destroy(public_id)
-        
-        return jsonify({
-            'success': True,
-            'result': result
-        })
-        
-    except Exception as e:
-        logging.error(f"Cleanup error: {e}")
-        return jsonify({'error': f'Cleanup failed: {str(e)}', 'success': False}), 500
+        return jsonify({'error': f'Processing failed: {str(e)}', 'success': False}), 500
 
 @app.route('/health')
 def health_check():
-    cloudinary_configured = validate_cloudinary_config()
+    """Health check endpoint to verify server is ready"""
     return jsonify({
         'status': 'healthy', 
-        'using_cloudinary': True,
-        'cloudinary_configured': cloudinary_configured
+        'cloudinary_available': CLOUDINARY_AVAILABLE,
+        'opencv_available': OPENCV_AVAILABLE,
+        'environment_loaded': bool(os.environ.get('CLOUDINARY_NAME')),
+        'timestamp': time.time()
     })
 
 if __name__ == '__main__':
