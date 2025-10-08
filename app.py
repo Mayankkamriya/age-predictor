@@ -1,39 +1,121 @@
 from flask import Flask, request, jsonify, render_template
-import tempfile
-import os
+from flask_cors import CORS
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 import cv2
 import numpy as np
+import requests
 import logging
+import os
 
 app = Flask(__name__)
+CORS(app)
+
+# Configure Cloudinary from environment variables (SECURE)
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_NAME'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret=os.environ.get('CLOUDINARY_SECRET_KEY')
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-def estimate_age_from_face_size(face_area, image_area):
-    """
-    Simple age estimation based on face size relative to image
-    This is a fallback when DeepFace is not available
-    """
-    face_ratio = face_area / image_area
+# Validate Cloudinary configuration
+def validate_cloudinary_config():
+    required_vars = ['CLOUDINARY_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_SECRET_KEY']
+    missing_vars = [var for var in required_vars if not os.environ.get(var)]
     
-    # Very rough estimation - larger faces (closer) tend to be adults
-    if face_ratio > 0.3:
-        return 35  # Adult
-    elif face_ratio > 0.15:
-        return 25  # Young adult
-    elif face_ratio > 0.08:
-        return 45  # Middle-aged
-    else:
-        return 55  # Senior
+    if missing_vars:
+        logging.error(f"Missing Cloudinary environment variables: {', '.join(missing_vars)}")
+        return False
+    return True
+
+class CloudinaryAgePredictor:
+    def __init__(self):
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        
+    def estimate_age(self, face_ratio, face_features=None):
+        """Estimate age based on face size ratio"""
+        if face_ratio > 0.25:
+            return 25  # Large face (close up) - young adult
+        elif face_ratio > 0.15:
+            return 35  # Medium face - adult
+        elif face_ratio > 0.08:
+            return 45  # Smaller face - middle aged
+        elif face_ratio > 0.04:
+            return 60  # Very small face - senior
+        else:
+            return 40  # Default
+
+    def predict_from_url(self, image_url):
+        """Predict age from Cloudinary image URL"""
+        try:
+            # Download image from Cloudinary
+            response = requests.get(image_url)
+            if response.status_code != 200:
+                return None
+            
+            # Convert to OpenCV format
+            file_bytes = np.frombuffer(response.content, np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                return None
+            
+            # Convert to grayscale for face detection
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Detect faces
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=1.1, 
+                minNeighbors=5, 
+                minSize=(30, 30)
+            )
+            
+            if len(faces) == 0:
+                return None
+            
+            # Use the largest face
+            largest_face = max(faces, key=lambda rect: rect[2] * rect[3])
+            x, y, w, h = largest_face
+            
+            # Calculate face ratio
+            face_area = w * h
+            image_area = img.shape[0] * img.shape[1]
+            face_ratio = face_area / image_area
+            
+            # Estimate age
+            age = self.estimate_age(face_ratio)
+            confidence = min(face_ratio * 10, 0.8)
+            
+            return {
+                'age': age,
+                'confidence': round(confidence, 2),
+                'faces_detected': len(faces),
+                'face_ratio': round(face_ratio, 3)
+            }
+            
+        except Exception as e:
+            logging.error(f"Error in prediction: {e}")
+            return None
+
+# Initialize predictor
+predictor = CloudinaryAgePredictor()
 
 @app.route('/')
 def home():
     return render_template('index.html')
 
-@app.route('/predict', methods=['POST'])
-def predict_age():
-    tmp_file_path = None
+@app.route('/upload', methods=['POST'])
+def upload_image():
+    """Upload image to Cloudinary and return URL"""
+    # Check if Cloudinary is configured
+    if not validate_cloudinary_config():
+        return jsonify({'error': 'Server configuration error', 'success': False}), 500
+    
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image uploaded', 'success': False}), 400
@@ -43,91 +125,88 @@ def predict_age():
         if image_file.filename == '':
             return jsonify({'error': 'No file selected', 'success': False}), 400
         
-        # Check file size (limit to 5MB)
-        image_file.seek(0, os.SEEK_END)
-        file_size = image_file.tell()
-        image_file.seek(0)
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            image_file,
+            folder="age_predictor",
+            quality="auto",
+            fetch_format="auto"
+        )
         
-        if file_size == 0:
-            return jsonify({'error': 'Empty file', 'success': False}), 400
-        if file_size > 5 * 1024 * 1024:  # 5MB limit
-            return jsonify({'error': 'File too large (max 5MB)', 'success': False}), 400
+        return jsonify({
+            'success': True,
+            'image_url': upload_result['secure_url'],
+            'public_id': upload_result['public_id']
+        })
         
-        # Convert to OpenCV format
-        file_bytes = np.frombuffer(image_file.read(), np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    except Exception as e:
+        logging.error(f"Upload error: {e}")
+        return jsonify({'error': f'Upload failed: {str(e)}', 'success': False}), 500
+
+@app.route('/predict', methods=['POST'])
+def predict_age():
+    """Predict age from Cloudinary image URL"""
+    try:
+        data = request.get_json()
         
-        if img is None:
-            return jsonify({'error': 'Invalid image format', 'success': False}), 400
+        if not data or 'image_url' not in data:
+            return jsonify({'error': 'No image URL provided', 'success': False}), 400
         
-        # Save temporary image
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-            cv2.imwrite(tmp_file.name, img)
-            tmp_file_path = tmp_file.name
+        image_url = data['image_url']
         
-        # Try DeepFace first, fallback to OpenCV face detection
-        try:
-            from deepface import DeepFace
-            app.logger.info("Using DeepFace for analysis...")
-            result = DeepFace.analyze(
-                img_path=tmp_file_path, 
-                actions=['age'], 
-                enforce_detection=False,
-                detector_backend='opencv'
-            )
-            
-            if result and len(result) > 0:
-                age = result[0]['age']
-                app.logger.info(f"DeepFace predicted age: {age}")
-                
-                return jsonify({
-                    'age': age,
-                    'success': True,
-                    'method': 'deepface'
-                })
-                
-        except Exception as deepface_error:
-            app.logger.warning(f"DeepFace failed, using fallback: {deepface_error}")
+        # Predict age using Cloudinary URL
+        result = predictor.predict_from_url(image_url)
         
-        # Fallback: Simple face detection with OpenCV
-        app.logger.info("Using OpenCV fallback...")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Load face detector
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-        
-        if len(faces) > 0:
-            # Use the largest face
-            largest_face = max(faces, key=lambda rect: rect[2] * rect[3])
-            x, y, w, h = largest_face
-            face_area = w * h
-            image_area = img.shape[0] * img.shape[1]
-            
-            estimated_age = estimate_age_from_face_size(face_area, image_area)
-            
+        if result:
             return jsonify({
-                'age': estimated_age,
+                'age': result['age'],
+                'confidence': result['confidence'],
+                'faces_detected': result['faces_detected'],
                 'success': True,
-                'method': 'opencv_fallback',
-                'message': 'Estimated using face detection'
+                'method': 'cloudinary_opencv'
             })
         else:
             return jsonify({'error': 'No face detected in the image', 'success': False}), 400
             
     except Exception as e:
-        app.logger.error(f"Error in predict_age: {str(e)}")
+        logging.error(f"Prediction error: {e}")
+        return jsonify({'error': f'Prediction failed: {str(e)}', 'success': False}), 500
+
+@app.route('/cleanup', methods=['POST'])
+def cleanup_image():
+    """Delete image from Cloudinary after processing"""
+    # Check if Cloudinary is configured
+    if not validate_cloudinary_config():
+        return jsonify({'error': 'Server configuration error', 'success': False}), 500
+    
+    try:
+        data = request.get_json()
+        
+        if not data or 'public_id' not in data:
+            return jsonify({'error': 'No public ID provided', 'success': False}), 400
+        
+        public_id = data['public_id']
+        
+        # Delete from Cloudinary
+        result = cloudinary.uploader.destroy(public_id)
+        
         return jsonify({
-            'error': f'Analysis failed: {str(e)}', 
-            'success': False
-        }), 500
-    finally:
-        # Clean up temporary file
-        if tmp_file_path and os.path.exists(tmp_file_path):
-            try:
-                os.unlink(tmp_file_path)
-            except Exception as e:
-                app.logger.error(f"Error cleaning up temp file: {e}")
+            'success': True,
+            'result': result
+        })
+        
+    except Exception as e:
+        logging.error(f"Cleanup error: {e}")
+        return jsonify({'error': f'Cleanup failed: {str(e)}', 'success': False}), 500
+
+@app.route('/health')
+def health_check():
+    cloudinary_configured = validate_cloudinary_config()
+    return jsonify({
+        'status': 'healthy', 
+        'using_cloudinary': True,
+        'cloudinary_configured': cloudinary_configured
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)

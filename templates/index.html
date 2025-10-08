@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Age Predictor</title>
+    <title>Age Predictor - Cloudinary</title>
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -71,30 +71,40 @@
             color: #007bff;
             font-style: italic;
         }
+        .step {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Age Prediction App</h1>
-        <p>Upload an image to predict the age of the person</p>
+        <p>Upload an image to predict the age (Powered by Cloudinary)</p>
         
         <div class="upload-box">
             <input type="file" id="imageInput" accept="image/*">
             <br>
-            <button onclick="predictAge()" id="predictBtn">Predict Age</button>
+            <button onclick="processImage()" id="predictBtn">Predict Age</button>
         </div>
         
+        <div id="steps"></div>
         <img id="preview">
-        
         <div id="result"></div>
     </div>
     
     <script>
-        function predictAge() {
+        let currentPublicId = null;
+        let currentImageUrl = null;
+
+        function processImage() {
             const input = document.getElementById('imageInput');
             const resultDiv = document.getElementById('result');
             const preview = document.getElementById('preview');
             const predictBtn = document.getElementById('predictBtn');
+            const stepsDiv = document.getElementById('steps');
             
             if (!input.files[0]) {
                 showError('Please select an image first');
@@ -112,40 +122,87 @@
             preview.src = URL.createObjectURL(file);
             preview.style.display = 'block';
             
-            const formData = new FormData();
-            formData.append('image', file);
+            // Reset previous results
+            resultDiv.style.display = 'none';
+            stepsDiv.innerHTML = '';
             
             // Disable button and show loading
             predictBtn.disabled = true;
-            predictBtn.textContent = 'Analyzing...';
-            resultDiv.innerHTML = '<div class="loading">Analyzing image... This may take a few seconds.</div>';
-            resultDiv.style.display = 'block';
-            resultDiv.className = '';
+            predictBtn.textContent = 'Processing...';
             
-            fetch('/predict', {
+            // Step 1: Upload to Cloudinary
+            showStep('Uploading image to Cloudinary...');
+            const formData = new FormData();
+            formData.append('image', file);
+            
+            fetch('/upload', {
                 method: 'POST',
                 body: formData
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+            .then(response => response.json())
+            .then(uploadData => {
+                if (!uploadData.success) {
+                    throw new Error(uploadData.error || 'Upload failed');
                 }
-                return response.json();
+                
+                showStep('✓ Image uploaded to Cloudinary');
+                currentImageUrl = uploadData.image_url;
+                currentPublicId = uploadData.public_id;
+                
+                // Step 2: Predict age
+                showStep('Analyzing image for age prediction...');
+                return fetch('/predict', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        image_url: currentImageUrl
+                    })
+                });
             })
-            .then(data => {
-                if (data.success) {
-                    resultDiv.innerHTML = `<div class="result success">
-                        <h3>Predicted Age: ${Math.round(data.age)} years</h3>
-                        <p>The person appears to be approximately ${Math.round(data.age)} years old.</p>
-                    </div>`;
-                    resultDiv.className = 'result success';
-                } else {
-                    showError(data.error || 'Analysis failed');
+            .then(response => response.json())
+            .then(predictionData => {
+                if (!predictionData.success) {
+                    throw new Error(predictionData.error || 'Prediction failed');
+                }
+                
+                showStep('✓ Age prediction completed');
+                
+                // Display results
+                resultDiv.innerHTML = `
+                    <div class="result success">
+                        <h3>Predicted Age: ${Math.round(predictionData.age)} years</h3>
+                        <p>Confidence: ${(predictionData.confidence * 100).toFixed(0)}%</p>
+                        ${predictionData.faces_detected > 1 ? 
+                            `<p><small>Detected ${predictionData.faces_detected} faces, using the most prominent one.</small></p>` : ''}
+                    </div>
+                `;
+                resultDiv.className = 'result success';
+                resultDiv.style.display = 'block';
+                
+                // Step 3: Cleanup (optional)
+                showStep('Cleaning up temporary files...');
+                if (currentPublicId) {
+                    return fetch('/cleanup', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            public_id: currentPublicId
+                        })
+                    });
+                }
+            })
+            .then(cleanupResponse => {
+                if (cleanupResponse) {
+                    showStep('✓ Cleanup completed');
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                showError('Failed to analyze image. Please try again.');
+                showError(error.message || 'Processing failed');
             })
             .finally(() => {
                 // Re-enable button
@@ -154,12 +211,22 @@
             });
         }
         
+        function showStep(message) {
+            const stepsDiv = document.getElementById('steps');
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'step';
+            stepDiv.textContent = message;
+            stepsDiv.appendChild(stepDiv);
+        }
+        
         function showError(message) {
             const resultDiv = document.getElementById('result');
-            resultDiv.innerHTML = `<div class="result error">
-                <h3>Error</h3>
-                <p>${message}</p>
-            </div>`;
+            resultDiv.innerHTML = `
+                <div class="result error">
+                    <h3>Error</h3>
+                    <p>${message}</p>
+                </div>
+            `;
             resultDiv.className = 'result error';
             resultDiv.style.display = 'block';
         }
@@ -167,7 +234,11 @@
         // Add event listener for file input change
         document.getElementById('imageInput').addEventListener('change', function(e) {
             const resultDiv = document.getElementById('result');
+            const stepsDiv = document.getElementById('steps');
             resultDiv.style.display = 'none';
+            stepsDiv.innerHTML = '';
+            currentPublicId = null;
+            currentImageUrl = null;
         });
     </script>
 </body>
