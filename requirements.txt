@@ -1,6 +1,7 @@
-deepface==0.0.79
 flask==2.3.3
-opencv-python-headless==4.8.1.78
-numpy==1.26.4
-pillow==10.3.0
 gunicorn==21.2.0
+pillow>=10.0.0
+numpy>=1.26.0
+opencv-python-headless>=4.8.1
+deepface>=0.0.79
+tf-keras>=2.20.0
