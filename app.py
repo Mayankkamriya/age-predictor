@@ -8,7 +8,8 @@ import numpy as np
 import requests
 import logging
 import os
-
+from dotenv import load_dotenv
+load_dotenv()
 app = Flask(__name__)
 CORS(app)
 

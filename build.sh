@@ -6,4 +6,5 @@ pyenv install 3.11.9 -s
 pyenv global 3.11.9
 
 # Install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
